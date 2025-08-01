@@ -1,19 +1,4 @@
------------------------------------------------------------------------------
-
-                   --- CAEN SpA - Computing Division ---
-
-                                www.caen.it
-
-  -----------------------------------------------------------------------------
-
-  SyncTest version 3.0.0 README
-  
-  February 2023
-
-  -----------------------------------------------------------------------------
-
-
-  Content
+Backup DAQ based on Caen synctest
   -----------------------------------------------------------------------------
   README        :  This file.
   ReleaseNotes  :  Revision History and notes.
@@ -49,4 +34,3 @@
   -----------------------------------------------------------------------------   
   For technical support, go to https://www.caen.it/mycaen/support/ (login and MyCAEN+ account required).
 
-# daq-backup-crilin --> based on CAEN synctest
