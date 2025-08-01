@@ -413,7 +413,7 @@ int SetSyncMode1(int handle[MAX_NBRD], UserParams_t Params) {
   uint32_t reg;
 
   //Set Slave Start Run on LVDS I/O
-  for (int i = 1; i < MAX_NBRD; i++) {
+  for (int i = 0; i < 1; i++) {
     ret |= CAEN_DGTZ_ReadRegister(handle[1], ADDR_ACQUISITION_MODE, &reg);
     reg |= 0x3;
     ret |= CAEN_DGTZ_WriteRegister(handle[1], ADDR_ACQUISITION_MODE, reg);
@@ -424,8 +424,8 @@ int SetSyncMode1(int handle[MAX_NBRD], UserParams_t Params) {
   reg |= (0x1 & 0x0);
   ret |= CAEN_DGTZ_WriteRegister(handle[0], ADDR_TRG_OUT_MASK, reg);
 
-  //Enable BUSY propagation on TRG-OUT for the SLAVE 
-  for (int i = 1; i < MAX_NBRD; i++) {
+  //Enable BUSY propagation on TRG-OUT for the SLAVE
+  for (int i = 0; i < 1; i++) {
     ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, &reg);
     reg |= 0xD0000;
     ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, reg);
@@ -601,12 +601,22 @@ int RunTimeCmd(int c) {
 
   if (c == 'h')
     PlotType = (PlotType == PLOT_HISTOGRAM ? PLOT_WAVEFORM : PLOT_HISTOGRAM);
-
+  if (c == 't'){
+    if(running){
+      uint32_t rdata;
+      CAEN_DGTZ_ReadRegister(handle[1], ADDR_FRONT_PANEL_IO_SET, &rdata); //edm
+      rdata &= ~((1 << 1) | (1 << 16) | (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20));
+      // Step 2: Set bit 17
+      rdata |= (1 << 17);
+      CAEN_DGTZ_WriteRegister(handle[1], ADDR_FRONT_PANEL_IO_SET, rdata); //edm
+    }
+  }
   //if (c == 'H') {
   //    PlotHist = 1;
   //    ContinousPlot = 1;
   //}
   if (c == 's') {
+     uint32_t rdata;
     if (!running) {
       for (int i = 1; i < MAX_NBRD; i++) {
 	GetNextEvent[i] = 1;
@@ -615,17 +625,28 @@ int RunTimeCmd(int c) {
       //ofile = fopen(fname, "w");
       //ofile1 = fopen(f1name, "w");
       // SetSyncMode(handle, Params); // Maybe can be skipped here
+
       int ret = StartRun(handle, Params.StartMode);
+
       if (ret != 0) {
 	printf("Error starting the acquisition\n");
 	return -1;
       }
       running = 1;
       printf("Acquisition started\n\n");
+
+      //uint32_t rdata;
     }
     else {
-      StopRun(handle);
       running = 0;
+
+      CAEN_DGTZ_ReadRegister(handle[1], ADDR_FRONT_PANEL_IO_SET, &rdata); //edm
+      // Step 2: Set bit 17
+      rdata |= (1 << 1);
+      CAEN_DGTZ_WriteRegister(handle[1], ADDR_FRONT_PANEL_IO_SET, rdata); //edm
+
+      StopRun(handle);
+
       printf("Acquisition stopped. Press s to restart, q to quit\n\n");
     }
   }
@@ -1235,6 +1256,7 @@ int main(int argc, char* argv[])
     /* stop the acquisition */
     CAEN_DGTZ_SWStopAcquisition(handle[i]);
     /* close the device and free the buffers */
+    //maybe stop the triggout output
     CAEN_DGTZ_FreeEvent(handle[i], (void**)&Event742);
     CAEN_DGTZ_FreeReadoutBuffer(&buffer[i]);
     /* close connection to boards */

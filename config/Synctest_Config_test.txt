@@ -67,7 +67,7 @@ IOlevel						NIM				# Front Panel LEMO I/O level (NIM or TTL). Options: NIM, TTL
 TestPattern					0				# Internal Test Pattern (triangular wave replacing ADC data): 0=disabled, 1=enabled
 DRS4Frequency				DRS4_1GHz		# DRS4 Sampling Frequency. Options: DRS4_5GHz, DRS4_2_5GHz, DRS4_1GHz
 
-SyncMode					TRGEXT		    # Syncronization Mode. Options: TRGEXT -> Trigger source vetoed externally, BUSYDCHAIN -> Busy propagated in Daisy-Chain
+SyncMode					BUSYDCHAIN		    # Syncronization Mode. Options: TRGEXT -> Trigger source vetoed externally, BUSYDCHAIN -> Busy propagated in Daisy-Chain
 
 # ------------------------------------------------------------------------------------------------------------------
 # OTHER OPTIONS 
