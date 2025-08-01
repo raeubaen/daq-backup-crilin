@@ -1,0 +1,78 @@
+import os
+import re
+import numpy as np
+import uproot
+
+# Adjust path if needed
+data_dir = "./"
+file_pattern = re.compile(r"waves_(\d+)_(\d+)\.dat")
+
+# Discover files and map (brd, ch) to file handles
+wave_files = {}
+for fname in os.listdir(data_dir):
+    match = file_pattern.match(fname)
+    if match:
+        brd = int(match.group(1))
+        ch = int(match.group(2))
+        wave_files[(brd, ch)] = os.path.join(data_dir, fname)
+
+# Determine number of boards and channels
+
+boards = sorted(set(brd for brd, _ in wave_files))
+channels = sorted(set(ch for _, ch in wave_files))
+n_brds = max(boards) + 1
+n_chs = max(channels) + 1
+
+# Read all files into per-(brd, ch) event lists
+event_data = {}  # (brd, ch) -> list of 1024-sample arrays
+n_events = None
+
+for (brd, ch), path in wave_files.items():
+    with open(path, "r") as f:
+        lines = f.readlines()
+        
+    waveforms = []
+    i = 1  # Skip first line (board/channel header)
+    while i < len(lines):
+        samples = []
+        while i < len(lines):
+            line = lines[i].strip()
+            if line.startswith("Event"):
+                i += 1  # skip this line, we're done with current waveform
+                print("Event "+ str(i) +"done")
+                break
+            try:
+                samples.append(int(float(line)))
+            except ValueError:
+                raise ValueError(f"Unexpected line in file {path} at line {i+1}: {line}")
+            i += 1
+
+        if len(samples) == 1024:
+            waveforms.append(samples)
+        elif len(samples) == 0:
+            continue  # skip empty blocks
+        else:
+            raise ValueError(f"Incomplete waveform in file {path}, found only {len(samples)} samples")
+
+    event_data[(brd, ch)] = waveforms
+
+    if n_events is None:
+        n_events = len(waveforms)
+    elif n_events != len(waveforms):
+        continue
+        #raise ValueError(f"Mismatch in number of events in file {path}")
+
+# Now organize into a Waves[event][brd][ch][samples]
+waves = np.zeros((n_events, n_brds, n_chs, 1024), dtype=np.int16)
+
+for (brd, ch), waveforms in event_data.items():
+    for evt_idx, wf in enumerate(waveforms):
+        waves[evt_idx, brd, ch, :] = wf
+
+# Write with uproot
+with uproot.recreate("waves_output.root") as f:
+    f["tree"] = {
+        "Waves": waves.tolist()  # uproot supports jagged/nested lists
+    }
+
+print("ROOT file 'waves_output.root' written with tree 'tree' and branch 'Waves'")

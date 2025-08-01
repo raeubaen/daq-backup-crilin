@@ -1,0 +1,1256 @@
+/*****************************************************************************
+ *
+ * CAEN SpA - Software Division
+ * Via Vetraia, 11 - 55049 - Viareggio ITALY
+ * +390594388398 - www.caen.it
+ *
+ ***************************************************************************/
+/**
+ * \note TERMS OF USE:
+ * This program is free software; you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation. This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. The user relies on the
+ * software, documentation and results solely at his own risk.
+ ******************************************************************************/
+/*
+ *
+ * Synctest application is a simple piece of software to demonstrates
+ * multiboard synchronization with CAEN digitizers.
+ * It only depends on CAENDigitizer library.
+ *
+ * So far, this software has been tested with V1724, V1720 and V1721/31
+ * the V1740 is not yet supported.
+ *
+ * Synctest can be adapted to different synchronization setup by changing
+ * the parameter SyncMode. See Synctest_Config.txt for more details
+ *
+ */
+
+
+#include "synctest.h"
+//#include "userparams.h"
+#include "X742CorrectionRoutines.h"
+//#include "wdump_CorrectionRoutines.h"
+#include <sys/stat.h>   // for mkdir()
+#include <sys/types.h>  // for mode_t
+#include <stdio.h>   
+
+
+//#define GNUPLOTEXE  "pgnuplot"
+#ifdef WIN32
+#define GNUPLOTEXE  "..\\pgnuplot.exe"
+#define NULL_PATH   "nul"
+#else
+#define GNUPLOTEXE  "gnuplot"   // Or '/usr/bin/gnuplot'
+#define NULL_PATH   "/dev/null"
+#endif
+
+#ifdef WIN32
+#define CONFIG_FILENAME			"..\\Synctest_Config.txt"
+#else
+#define CONFIG_FILENAME         "Synctest_Config.txt"
+#endif
+
+#define MAX_DELAY_WINDOW 10
+
+// --------------------------------------------------------------------------------------------------------- 
+// Global Variables
+// --------------------------------------------------------------------------------------------------------- 
+int handle[MAX_NBRD], delay_mean[MAX_DELAY_WINDOW]={0};
+UserParams_t Params;
+Stats_t Stats;
+int QuitAcquisition = 0, running = 0;
+int ContinousPlot = 0, SingleShot = 0, PlotType = 0;
+int GetNextEvent[MAX_NBRD] = { 1 };
+uint32_t NumEvents[MAX_NBRD] = { 0 };
+
+// --------------------------------------------------------------------------------------------------------- 
+// Local Functions
+// --------------------------------------------------------------------------------------------------------- 
+int st_getch(void)
+{
+#ifdef WIN32
+  return _getch();
+#else
+  struct termios oldattr;
+  if (tcgetattr(STDIN_FILENO, &oldattr) == -1) perror(NULL);
+  struct termios newattr = oldattr;
+  newattr.c_lflag &= ~(ICANON | ECHO);
+  newattr.c_cc[VTIME] = 0;
+  newattr.c_cc[VMIN] = 1;
+  if (tcsetattr(STDIN_FILENO, TCSANOW, &newattr) == -1) perror(NULL);
+  const int ch = getchar();
+  if (tcsetattr(STDIN_FILENO, TCSANOW, &oldattr) == -1) perror(NULL);
+  return ch;
+#endif
+  //	unsigned char temp;
+  //	raw();
+  //    /* stdin = fd 0 */
+  //	if(read(0, &temp, 1) != 1)
+  //		return 0;
+  //	return temp;
+  //#endif
+}
+
+int st_kbhit()
+{
+#ifdef WIN32
+  return _kbhit();
+#else
+  struct termios oldattr;
+  if (tcgetattr(STDIN_FILENO, &oldattr) == -1) perror(NULL);
+  struct termios newattr = oldattr;
+  newattr.c_lflag &= ~(ICANON | ECHO);
+  newattr.c_cc[VTIME] = 0;
+  newattr.c_cc[VMIN] = 1;
+  if (tcsetattr(STDIN_FILENO, TCSANOW, &newattr) == -1) perror(NULL);
+  /* check stdin (fd 0) for activity */
+  fd_set read_handles;
+  FD_ZERO(&read_handles);
+  FD_SET(0, &read_handles);
+  struct timeval timeout;
+  timeout.tv_sec = timeout.tv_usec = 0;
+  int status = select(0 + 1, &read_handles, NULL, NULL, &timeout);
+  if (tcsetattr(STDIN_FILENO, TCSANOW, &oldattr) == -1) perror(NULL);
+  if (status < 0) {
+    printf("select() failed in kbhit()\n");
+    exit(1);
+  }
+  return status;
+#endif
+}
+
+#ifdef WIN32
+// --------------------------------------------------------------------------------------------------------- 
+// Description: get write time of a file 
+// Return:		0: OK, -1: error
+// --------------------------------------------------------------------------------------------------------- 
+int GetFileUpdateTime(char* fname, uint64_t* ftime)
+{
+  FILETIME ftCreate, ftAccess, ftWrite;
+  SYSTEMTIME stUTC, stLocal;
+  HANDLE hFile;
+
+  wchar_t wtext[200];
+  mbstowcs(wtext, fname, strlen(fname) + 1);//Plus null
+  LPWSTR ptr = wtext;
+
+  *ftime = 0;
+  hFile = CreateFile(ptr, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);   // DNIN THIS CREATE A CRASH - "A Geap has been corrupted
+  if (hFile == INVALID_HANDLE_VALUE)
+    return -1;
+
+  // Retrieve the file times for the file.
+  if (!GetFileTime(hFile, &ftCreate, &ftAccess, &ftWrite))
+    return -1;
+
+  // Convert the last-write time to local time.
+  FileTimeToSystemTime(&ftWrite, &stUTC);
+  SystemTimeToTzSpecificLocalTime(NULL, &stUTC, &stLocal);
+  CloseHandle(hFile);
+
+  //Con_printf("C", "Y=%d M=%d D=%d - H=%d, min=%d, sec=%d\n", stLocal.wYear, stLocal.wMonth, stLocal.wDay, stLocal.wHour, stLocal.wMinute, stLocal.wSecond);
+  *ftime = 366 * 31 * 24 * 3600 * (uint64_t)stLocal.wYear +
+    31 * 24 * 3600 * (uint64_t)stLocal.wMonth +
+    24 * 3600 * (uint64_t)stLocal.wDay +
+    3600 * (uint64_t)stLocal.wHour +
+    60 * (uint64_t)stLocal.wMinute +
+    (uint64_t)stLocal.wSecond;
+
+  return 0;
+}
+
+
+#else
+// --------------------------------------------------------------------------------------------------------- 
+// Description: get write time of a file 
+// Return:		0: OK, -1: error
+// --------------------------------------------------------------------------------------------------------- 
+int GetFileUpdateTime(char* fname, uint64_t* ftime)
+{
+  struct stat t_stat;
+
+  *ftime = 0;
+  stat(fname, &t_stat);
+  //struct tm * timeinfo = localtime(&t_stat.st_mtime); 
+  *ftime = (uint64_t)t_stat.st_mtime; // last modification time
+  return 0;
+}
+
+#endif
+
+// --------------------------------------------------------------------------------------------------------- 
+//  Init console window (terminal)
+// --------------------------------------------------------------------------------------------------------- 
+int InitConsole()
+{
+#ifdef _WIN32
+  // Set console window size
+  SMALL_RECT rect;
+  COORD coord;
+  coord.X = 150; // Defining our X and
+  coord.Y = 50;  // Y size for buffer.
+
+  rect.Top = 100;
+  rect.Left = 0;
+  rect.Bottom = coord.Y - 1; // height for window
+  rect.Right = coord.X - 1;  // width for window
+
+  //HANDLE hwnd = GetStdHandle(STD_OUTPUT_HANDLE); // get handle
+  HANDLE hwnd = GetConsoleWindow();
+  SetConsoleScreenBufferSize(hwnd, coord);       // set buffer size
+  SetConsoleWindowInfo(hwnd, TRUE, &rect);       // set window size
+
+  system("mode con: cols=80 lines=54");	// 
+#else
+  raw();
+#endif
+  return 0;
+}
+//int st_scanf() {
+//#ifdef WIN32
+//    return scanf;
+//#else
+//    return _scanf;
+//#endif
+//}
+/* ============================================================================== */
+/* Get time in milliseconds from the computer internal clock */
+long get_time()
+{
+  long time_ms;
+#ifdef WIN32
+  struct _timeb timebuffer;
+  _ftime(&timebuffer);
+  time_ms = (long)timebuffer.time * 1000 + (long)timebuffer.millitm;
+#else
+  struct timeval t1;
+  struct timezone tz;
+  gettimeofday(&t1, &tz);
+  time_ms = (t1.tv_sec) * 1000 + t1.tv_usec / 1000;
+#endif
+  //printf("time_ms %i", time_ms);
+  return time_ms;
+}
+
+/* ============================================================================== */
+int ResetStatistics()
+{
+  Stats.DeltaT = 0;
+  Stats.DeltaTTT = 0;
+  Stats.MeanT = 0;
+  Stats.MeanTTT = 0;
+  Stats.SigmaT = 0;
+  Stats.SigmaTTT = 0;
+  Stats.NsT = 0;
+  Stats.NsTTT = 0;
+  for (int i = 0; i < MAX_NBRD; ++i) {
+    Stats.PrevTTT[i] = 0;
+    Stats.TTT[i] = 0;
+    Stats.PulseEdgeTime[i] = 0;
+    Stats.TrEdgeTime[i] = 0;
+  }
+  return 0;
+}
+/* ============================================================================== */
+double interpolate(float* data, unsigned int length, int threshold, CAEN_DGTZ_TriggerPolarity_t edge, double Tstart)
+{
+  unsigned int i;
+  double crosspoint = -1.0;
+
+  for (i = (int)(Tstart); i < length - 1; ++i) {
+    if ((edge == CAEN_DGTZ_TriggerOnFallingEdge) && (data[i] >= threshold) && (data[i + 1] < threshold)) {
+      crosspoint = i + ((double)(data[i] - threshold) / (double)(data[i] - data[i + 1]));
+      break;
+    }
+    if ((edge == CAEN_DGTZ_TriggerOnRisingEdge) && (data[i] <= threshold) && (data[i + 1] > threshold)) {
+      crosspoint = i + ((double)(threshold - data[i]) / (double)(data[i + 1] - data[i]));
+      break;
+    }
+  }
+  return crosspoint;
+}
+
+/* ============================================================================== */
+int ConfigureDigitizers(int handle[MAX_NBRD], CAEN_DGTZ_BoardInfo_t Binfo[MAX_NBRD], UserParams_t Params)
+{
+  int i, ret = 0, gr;
+  uint32_t reg;
+
+  for (i = 0; i < MAX_NBRD; i++) {
+    printf("starting to configure board: %i\n", i);
+    /* Reset all board registers */
+    ret |= CAEN_DGTZ_Reset(handle[i]);
+    printf("reset done - return code: %i\n", ret);
+
+    ret |= CAEN_DGTZ_WriteRegister(handle[i], CAEN_DGTZ_BOARD_ID_ADD, (i & 0x1));
+    printf("writereg done - return code: %i\n", ret);
+
+    if (Params.TestPattern) {
+      ret |= CAEN_DGTZ_ReadRegister(handle[i], CAEN_DGTZ_BROAD_CH_CONFIGBIT_SET_ADD, &reg);
+      reg |= 1 << 3;
+      ret |= CAEN_DGTZ_WriteRegister(handle[i], CAEN_DGTZ_BROAD_CH_CONFIGBIT_SET_ADD, reg);
+    }
+    if (Params.DRS4Frequency) {
+      ret |= CAEN_DGTZ_SetDRS4SamplingFrequency(handle[i], Params.DRS4Frequency);
+    }
+
+    printf("set done - return code: %i\n", ret);
+
+    ret |= CAEN_DGTZ_SetRecordLength(handle[i], Params.RecordLength);
+    ret |= CAEN_DGTZ_SetPostTriggerSize(handle[i], Params.PostTrigger[i]);
+    ret |= CAEN_DGTZ_SetIOLevel(handle[i], Params.IOlevel);
+    ret |= CAEN_DGTZ_SetMaxNumEventsBLT(handle[i], MAX_EVENTS_XFER);
+
+    printf("set done - return code: %i\n", ret);
+
+    //gr = Params.RefChannel[i] / 8;
+    ret |= CAEN_DGTZ_SetGroupEnableMask(handle[i], 0xF);
+    //ret |= CAEN_DGTZ_SetGroupEnableMask(handle[i], 1 << gr);
+    for (gr = 0; gr < 4; ++gr) {
+      ret |= CAEN_DGTZ_SetGroupFastTriggerThreshold(handle[i], gr, Params.FastTriggerThreshold[i]);
+      ret |= CAEN_DGTZ_SetGroupFastTriggerDCOffset(handle[i], gr, Params.FastTriggerOffset[i]);
+      ret |= CAEN_DGTZ_SetTriggerPolarity(handle[i], gr, Params.TriggerEdge);
+    }
+    ret |= CAEN_DGTZ_SetFastTriggerDigitizing(handle[i], CAEN_DGTZ_ENABLE);
+    ret |= CAEN_DGTZ_SetFastTriggerMode(handle[i], CAEN_DGTZ_TRGMODE_ACQ_ONLY);
+
+    printf("set done - return code: %i\n", ret);
+
+    ret |= CAEN_DGTZ_SetChannelDCOffset(handle[i], Params.RefChannel[i], Params.DCoffset[i]);
+
+    /* DO NOT CHANGE : Patch for 1024 or 1023 memory segments */
+    /*ret |= CAEN_DGTZ_ReadRegister(handle[i], 0x8174, &rdata);
+      if ((rdata == 0x400) || (rdata == 0x3FF))
+      ret |= CAEN_DGTZ_WriteRegister(handle[i], 0x8174, 0x3FE);*/
+  }
+  return ret;
+}
+
+
+/* ============================================================================== */
+//int SetSlaveStartMode(int handle[MAX_NBRD], UserParams_t Params) {
+//    int ret = 0;
+//    uint32_t reg;
+//
+//    if (Params.StartSlave == START_SIN) { //Set SLAVE start run via S-IN
+//       //Master acq mode on S-IN Level
+//        ret |= CAEN_DGTZ_ReadRegister(handle[0], ADDR_ACQUISITION_MODE, &reg);
+//        reg |= 0x8;
+//        ret |= CAEN_DGTZ_WriteRegister(handle[0], ADDR_ACQUISITION_MODE, reg);
+//
+//        //Slave acq mode on S-IN Level
+//        for (int i = 1; i < MAX_NBRD; ++i) {
+//            ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_ACQUISITION_MODE, &reg);
+//            reg |= RUN_START_ON_SIN_LEVEL;
+//            ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_ACQUISITION_MODE, reg);
+//        }
+//
+//        //Set TRGOUT=RUN to propagate run through S-IN => TRGOUT daisy chain
+//        ret |= CAEN_DGTZ_ReadRegister(handle[0], ADDR_FRONT_PANEL_IO_SET, &reg);
+//        reg = reg & 0xFFF0FFFF | 0x00010000;
+//        ret |= CAEN_DGTZ_WriteRegister(handle[0], ADDR_FRONT_PANEL_IO_SET, reg);
+//    } else {
+//        //Set Slave Start Run on LVDS I/O
+//        for (int i = 1; i < MAX_NBRD; ++i) {
+//            ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_ACQUISITION_MODE, &reg);
+//            reg |= 0x3;
+//            ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_ACQUISITION_MODE, reg);
+//        }
+//    }
+//    return ret;
+//}
+
+
+int SetSyncMode0(int handle[MAX_NBRD], UserParams_t Params)
+{
+  int ret = 0;
+  uint32_t reg;
+
+  //Set Slaves Start Run on LVDS I/O
+  for (int i = 1; i < MAX_NBRD; ++i) {
+    ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_ACQUISITION_MODE, &reg);
+    reg |= 0x3;
+    ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_ACQUISITION_MODE, reg);
+  }
+  // no tigger propagation to TRGOUT
+  ret |= CAEN_DGTZ_ReadRegister(handle[0], ADDR_TRG_OUT_MASK, &reg);
+  reg |= (0x1 & 0x0);
+  ret |= CAEN_DGTZ_WriteRegister(handle[0], ADDR_TRG_OUT_MASK, reg);
+
+  //Set LVDS settings for Master and Slave
+  for (int i = 0; i < MAX_NBRD; i++) {
+
+    //Enables nBusy/nVeto New Features
+    ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_LVDS_NEW_FEATURES, &reg);
+    reg |= 0x22;
+    ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_LVDS_NEW_FEATURES, reg);
+	
+    //Set PIN[3:0] as Output, PIN[7:4] as Input and enables LVDS New Features
+    ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, &reg);
+    reg |= 0x104;
+    ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, reg);
+	
+    //Enable BUSY propagation on TRG-OUT 
+    ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, &reg);
+    reg |= 0xD0000;
+    ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, reg);
+	
+    //Set Run Delay
+    ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_RUN_DELAY, &reg);
+    reg |= 2 * (MAX_NBRD - 1 - i); // DNIN: 2 clock *(Nbrd - 1 - i)
+    ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_RUN_DELAY, reg);
+	
+  }
+
+  return ret;
+}
+
+int SetSyncMode1(int handle[MAX_NBRD], UserParams_t Params) {
+  int ret = 0;
+  uint32_t reg;
+
+  //Set Slave Start Run on LVDS I/O
+  for (int i = 1; i < MAX_NBRD; i++) {
+    ret |= CAEN_DGTZ_ReadRegister(handle[1], ADDR_ACQUISITION_MODE, &reg);
+    reg |= 0x3;
+    ret |= CAEN_DGTZ_WriteRegister(handle[1], ADDR_ACQUISITION_MODE, reg);
+  }
+
+  // no tigger propagation to TRGOUT
+  ret |= CAEN_DGTZ_ReadRegister(handle[0], ADDR_TRG_OUT_MASK, &reg);
+  reg |= (0x1 & 0x0);
+  ret |= CAEN_DGTZ_WriteRegister(handle[0], ADDR_TRG_OUT_MASK, reg);
+
+  //Enable BUSY propagation on TRG-OUT for the SLAVE 
+  for (int i = 1; i < MAX_NBRD; i++) {
+    ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, &reg);
+    reg |= 0xD0000;
+    ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, reg);
+  }
+
+  //Set LVDS settings for Master and Slave
+  for (int i = 0; i < MAX_NBRD; i++) {
+
+    //Enables nBusy/nVeto New Features
+    ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_LVDS_NEW_FEATURES, &reg);
+    reg |= 0x22;
+    ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_LVDS_NEW_FEATURES, reg);
+
+    //Set Master to propagate nBusy on LVDS I/O and enable nBusyIn via LVDS I/O in the SLAVE
+    ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_ACQUISITION_MODE, &reg);
+    reg |= 0x100;
+    ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_ACQUISITION_MODE, reg);
+
+    //Set PIN[3:0] as Output, PIN[7:4] as Input and enables LVDS New Features
+    ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, &reg);
+    reg |= 0x104;
+    ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, reg);
+
+    //Set Run Delay
+    ret |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_RUN_DELAY, &reg);
+    reg |= 2 * (MAX_NBRD - 1 - i);
+    ret |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_RUN_DELAY, reg);
+  }
+
+
+  return ret;
+}
+
+int SetSyncMode(int handle[MAX_NBRD], UserParams_t Params) {
+  int ret = 0;
+
+  switch (Params.SyncMode) {
+  case 0:
+    ret |= SetSyncMode0(handle, Params);
+    break;
+  case 1:
+    ret |= SetSyncMode1(handle, Params);
+    break;
+  default:
+    printf("\n \nInvalid SyncMode\n");
+    return 1;
+  }
+
+  return ret;
+}
+
+
+/* ============================================================================== */
+int StartRun(int handle[MAX_NBRD], int StartMode)
+{
+  int re = 0;
+  uint32_t data;
+
+  for (int i = 1; i < MAX_NBRD; i++) {
+    re |= CAEN_DGTZ_ReadRegister(handle[i], ADDR_ACQUISITION_MODE, &data);
+    data |= 0x4;
+    re |= CAEN_DGTZ_WriteRegister(handle[i], ADDR_ACQUISITION_MODE, data);
+  }
+
+  if (StartMode == START_SW_CONTROLLED) {
+    re = CAEN_DGTZ_ReadRegister(handle[0], ADDR_ACQUISITION_MODE, &data);
+    data |= 0x04;
+    re = CAEN_DGTZ_WriteRegister(handle[0], ADDR_ACQUISITION_MODE, data);
+  }
+  else {
+    re = CAEN_DGTZ_ReadRegister(handle[0], ADDR_ACQUISITION_MODE, &data);
+    data |= 0x05;
+    re = CAEN_DGTZ_WriteRegister(handle[0], ADDR_ACQUISITION_MODE, data);
+    printf("Run starts/stops on the S-IN high/low level\n");
+  }
+  re = CAEN_DGTZ_ReadRegister(handle[0], ADDR_ACQUISITION_MODE, &data);
+  if (re != 0) {
+    printf("Run not started\n");
+    return re;
+  }
+  return 0;
+}
+
+
+/* ============================================================================== */
+int StopRun(int handle[MAX_NBRD])
+{
+  for (int i = 0; i < MAX_NBRD; i++) {
+    CAEN_DGTZ_WriteRegister(handle[i], ADDR_ACQUISITION_MODE, 0x0);
+    CAEN_DGTZ_WriteRegister(handle[i], CAEN_DGTZ_SW_CLEAR_ADD, 0x1);
+  }
+  return 0;
+}
+
+
+/* ============================================================================== */
+// int ClearBuffers DNIN: ??
+
+/* ============================================================================== */
+int ForceClockSync(int handle)
+{
+  int ret;
+  uint32_t reg;
+  SLEEP(500);
+  /* Force clock phase alignment */
+  ret = CAEN_DGTZ_ReadRegister(handle, ADDR_FORCE_SYNC, &reg);
+  reg |= 0x1;
+  ret = CAEN_DGTZ_WriteRegister(handle, ADDR_FORCE_SYNC, reg);
+  /* Wait an appropriate time before proceeding */
+  SLEEP(1000);
+  return ret;
+}
+
+
+/* ########################################################################### */
+/* CHECK CFG FILE UPDATE                                                       */
+/* ########################################################################### */
+int CheckFileUpdate() {
+  static uint64_t CfgUpdateTime, RunVarsUpdateTime;
+  uint64_t CurrentTime;
+  static int first = 1;
+  int ret = 0;
+  FILE* cfg;
+
+  GetFileUpdateTime(CONFIG_FILENAME, &CurrentTime);
+  //printf("CurrentTime %i", CurrentTime);
+  if ((CurrentTime > CfgUpdateTime) && !first) {
+    cfg = fopen(CONFIG_FILENAME, "r");
+    ParseConfigFile(cfg, &Params);
+    fclose(cfg);
+    printf("Config file rload\n");
+    ret = 1;
+  }
+  //printf("before CurrentTime =%i, CfgUpdateTime = %i\n", CurrentTime, CfgUpdateTime);
+  CfgUpdateTime = CurrentTime;
+  //printf("CurrentTime =%i, CfgUpdateTime = %i, ret status %i\n", CurrentTime, CfgUpdateTime, ret);
+  first = 0;
+
+  return ret;
+}
+
+/* ########################################################################### */
+/* RUN TIME CMD                                                                */
+/* ########################################################################### */
+int RunTimeCmd(int c) {
+  if (c == 'q') QuitAcquisition = 1;
+  if (c == 'c') { // CHECK CLOCK ALIGNMENT  
+    uint32_t rdata[MAX_NBRD];
+    // propagate CLK to trgout on both boards
+    for (int i = 0; i < MAX_NBRD; ++i) {
+      CAEN_DGTZ_ReadRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, &rdata[i]);
+      CAEN_DGTZ_WriteRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, 0x00050000);
+    }
+    printf("Trigger Clk is now output on TRGOUT.\n");
+    printf("Press [r] to reload PLL config, any other key to go back to main menu\n");
+    //printf("ciao cc");
+    int cc = st_getch();
+    if (cc == 'r') {
+      CAEN_DGTZ_WriteRegister(handle[0], ADDR_RELOAD_PLL, 0);
+      ForceClockSync(handle[0]);
+      printf("PLL reloaded\n");
+    }
+    //printf("ciao cc, sopravvissuto");
+    for (int i = 0; i < MAX_NBRD; ++i)
+      CAEN_DGTZ_WriteRegister(handle[i], ADDR_FRONT_PANEL_IO_SET, rdata[i]);
+  }
+  if (c == 'p') {
+    SingleShot = 1;
+    ContinousPlot = 0;
+  }
+  if (c == 'P')
+    ContinousPlot ^= 1;
+
+  if (c == 'h')
+    PlotType = (PlotType == PLOT_HISTOGRAM ? PLOT_WAVEFORM : PLOT_HISTOGRAM);
+
+  //if (c == 'H') {
+  //    PlotHist = 1;
+  //    ContinousPlot = 1;
+  //}
+  if (c == 's') {
+    if (!running) {
+      for (int i = 1; i < MAX_NBRD; i++) {
+	GetNextEvent[i] = 1;
+	NumEvents[i] = 0;
+      }
+      //ofile = fopen(fname, "w");
+      //ofile1 = fopen(f1name, "w");
+      // SetSyncMode(handle, Params); // Maybe can be skipped here
+      int ret = StartRun(handle, Params.StartMode);
+      if (ret != 0) {
+	printf("Error starting the acquisition\n");
+	return -1;
+      }
+      running = 1;
+      printf("Acquisition started\n\n");
+    }
+    else {
+      StopRun(handle);
+      running = 0;
+      printf("Acquisition stopped. Press s to restart, q to quit\n\n");
+    }
+  }
+  if (c == 'r') {
+    ResetStatistics();
+    //MeanT = 0.0;
+    //MeanTTT = 0.0;
+    //SigmaT = 0.0;
+    //SigmaTTT = 0.0;
+    //NsT = 0;
+    //NsTTT = 0;
+  }
+
+  if (c == ' ') {
+    printf("\n");
+    printf("[s] Start/Stop acquisition\n");
+    printf("[c] Check clock allignment\n");
+    printf("[P] Enable/Disable continous plot\n");
+    printf("[p] Single shot plot\n");
+    printf("[h] Toggle between Histogram and Waveform plot\n");
+    printf("[r] Reset statistics\n");
+    printf("[q] Quit\n");
+    printf("\n\n");
+    //c = st_getch();
+    //RunTimeCmd(c);
+  }
+
+  return 0;
+}
+
+
+
+/* ########################################################################### */
+/* MAIN                                                                        */
+/* ########################################################################### */
+int main(int argc, char* argv[])
+{
+
+  FILE* ofile;
+  FILE* ofile1;
+  char fname[50] = "events_info.txt";
+  char f1name[50] = "events_info_1.txt";
+  char ConfigFileName[100];
+  ofile = fopen(fname, "w");
+  ofile1 = fopen(f1name, "w");
+
+
+  FILE* f_ini; // Config file
+  int i, j, ret = 0, Nbit, Nch, error = 1;
+  int EvNoData[MAX_NBRD] = { 0 };
+
+  int clrscr = 0, rdymsg = 0;
+  char* buffer[MAX_NBRD] = { NULL }, * EventPtr[MAX_NBRD] = { NULL };
+  int num_written_events=0;
+  CAEN_DGTZ_BoardInfo_t  BoardInfo[MAX_NBRD];
+  CAEN_DGTZ_EventInfo_t  EventInfo[MAX_NBRD];
+  CAEN_DGTZ_X742_EVENT_t* Event742[MAX_NBRD] = { NULL };
+  float* Wave[MAX_NBRD];
+  float* Wave_chs[MAX_NBRD][MAX_NCH + 2];
+  uint32_t Ch_size;
+  float* Trigger[MAX_NBRD];
+  uint32_t Ns[MAX_NBRD], EIndx[MAX_NBRD] = { 0 };
+  uint32_t BufferSize[MAX_NBRD] = { 0 }, TrgCnt[MAX_NBRD] = { 0 }, missingEdge[MAX_NBRD] = { 0 };
+  uint32_t Nb = 0, MatchingEvents = 0;
+  uint64_t CurrentTime, PrevKbTime, PrevRateTime, ElapsedTime, Nroll[MAX_NBRD] = { 0 }, Head_Nroll[MAX_NBRD] = { 0 }; 
+  double Ts, Tt;
+  //double TTT[MAX_NBRD], PrevTTT[MAX_NBRD] = { 0 }, DeltaT, DeltaTTT, PulseEdgeTime[MAX_NBRD], TrEdgeTime[MAX_NBRD];
+  char file_name[50];
+  char dir_name[50];
+  int event_counter = 0;
+
+  DataCorrection_t Table[MAX_NBRD][MAX_NGR];
+  //CAEN_DGTZ_DRS4Correction_t X742Table[MAX_NBRD];
+
+  FILE *wave_files[MAX_NBRD][MAX_NCH + 2];
+  FILE *lock_run_id = NULL;
+  InitConsole();  // init the console window (I/O terminal)
+
+  printf("\n");
+  printf("**************************************************************\n");
+  printf(" CAEN Digitizer Multiboard synchronization test %s\n", SyncTest_Release);
+  printf("**************************************************************\n");
+
+  // Read and Parse Cfg file on Params structure
+  if (argc > 1) // User can enter custom filename
+    strcpy(ConfigFileName, argv[1]);
+  else
+    strcpy(ConfigFileName, CONFIG_FILENAME);
+  f_ini = fopen(ConfigFileName, "r");
+  if (f_ini == NULL) {
+    printf("ERROR: Can't open configuration file %s\n", CONFIG_FILENAME);
+    goto QuitProgram;
+  }
+  ParseConfigFile(f_ini, &Params);
+  fclose(f_ini);
+
+  /* *************************************************************************************** */
+  /* OPEN DIGITIZERS                                                                         */
+  /* *************************************************************************************** */
+  for (i = 0; i < MAX_NBRD; i++) {
+    //ret = CAEN_DGTZ_OpenDigitizer(Params.ConnectionType[i], Params.LinkNum[i], Params.ConetNode[i], Params.BaseAddress[i], &handle[i]);
+    ret = CAEN_DGTZ_OpenDigitizer2(Params.ConnectionType[i], (Params.ConnectionType[i] == CAEN_DGTZ_ETH_V4718) ? Params.ipAddress[i] : (void*)&(Params.LinkNum[i]), Params.ConetNode[i], Params.BaseAddress[i], &handle[i]);
+    if (ret) {
+      printf("Can't open digitizer n. %d. Error %d\n", i, ret);
+      goto QuitProgram;
+    }
+  }
+
+  /* *************************************************************************************** */
+  /* GET BOARD INFO AND FW REVISION                                                          */
+  /* *************************************************************************************** */
+  for (i = 0; i < MAX_NBRD; i++) {
+    ret = CAEN_DGTZ_GetInfo(handle[i], &BoardInfo[i]);
+    if (ret) {
+      printf("Can't read board info for digitizer n. %d\n", i);
+      goto QuitProgram;
+    }
+    /* Check BoardType */
+    if (BoardInfo[i].FamilyCode != 6) {
+      printf("This digitizer is not a V1742; V1742TestSync doesn't support it\n");
+      goto QuitProgram;
+    }
+    //if ((ret = CAEN_DGTZ_GetCorrectionTables(handle[i], Params.DRS4Frequency, (void*)X742Table)) != CAEN_DGTZ_Success)
+    //    goto QuitProgram;
+    for (int gr = 0; gr < MAX_NGR; ++gr) {
+      if (ret = LoadCorrectionTables(handle[i], &Table[i][gr], gr, Params.DRS4Frequency))
+	goto QuitProgram;
+    }
+
+    printf("Connected to CAEN Digitizer Model %s\n", BoardInfo[i].ModelName);
+    printf("ROC FPGA Release is %s\n", BoardInfo[i].ROC_FirmwareRel);
+    printf("AMC FPGA Release is %s\n\n", BoardInfo[i].AMC_FirmwareRel);
+    printf("Correction Tables Loaded!\n\n");
+  }
+
+  /* Get num of channels, num of bit, num of group of the board from first board */
+  Nbit = BoardInfo[0].ADC_NBits;
+  Nch = BoardInfo[0].Channels;
+  switch (Params.DRS4Frequency) {
+  case CAEN_DGTZ_DRS4_5GHz: Ts = 0.2; break;
+  case CAEN_DGTZ_DRS4_2_5GHz: Ts = 0.4; break;
+  case CAEN_DGTZ_DRS4_1GHz: Ts = 1.0; break;
+  default: Ts = 0.2; break;
+  }
+
+  Tt = 8.53; // step per il Local_TTT
+
+  /* *************************************************************************************** */
+  /* BOARD CONFIGURATION                                                                     */
+  /* *************************************************************************************** */
+  // Set registers for the acquisition (record length, channel mask, etc...)
+  ret = ConfigureDigitizers(handle, BoardInfo, Params);
+
+  printf("configure digitizer return code: %i", ret);
+
+
+  // Set registers for the synchronization (start mode, trigger masks, signals propagation, etc...)
+  ret |= SetSyncMode(handle, Params);
+  printf("configure digitizer|sync mode return code: %i", ret);
+
+  if (ret) {
+    printf("Errors occurred during 1digitizer configuration\n");
+    goto QuitProgram;
+  }
+  printf("Boards Configured!!\n\n");
+
+  /* *************************************************************************************** */
+  /* MEMORY ALLOCATION                                                                       */
+  /* *************************************************************************************** */
+  for (i = 0; i < MAX_NBRD; ++i) {
+    uint32_t AllocatedSize;
+    /* Memory allocation for event buffer and readout buffer */
+    ret = CAEN_DGTZ_AllocateEvent(handle[i], (void**)&Event742[i]);
+    /* NOTE : This malloc must be done after the digitizer programming */
+    ret |= CAEN_DGTZ_MallocReadoutBuffer(handle[i], &buffer[i], &AllocatedSize);
+    if (ret) {
+      printf("Can't allocate memory for the acquisition\n");
+      goto QuitProgram;
+    }
+  }
+  // Allocate memory for the histograms
+
+  /* *************************************************************************************** */
+  /* OPEN FILES                                                                              */
+  /* *************************************************************************************** */
+  char sstr[200];
+  strcpy(sstr, "");
+  strcat(sstr, GNUPLOTEXE);
+
+#ifndef _WIN32
+  strcat(sstr, " 2> ");
+  strcat(sstr, NULL_PATH);
+#endif
+
+  int run_number = 0;
+  lock_run_id = fopen("lockfiles/run_number", "r");
+  if (!lock_run_id) {
+    perror("Failed to open run_number for reading");
+  }
+  if (fscanf(lock_run_id, "%d", &run_number) != 1) {
+    perror("Failed to read run number");
+    fclose(lock_run_id);
+  }
+  fclose(lock_run_id);
+  printf(dir_name);
+  snprintf(dir_name, 50, "../rawdata/run_%d_%d", run_number, get_time);
+
+#ifdef _WIN32
+#include <direct.h>
+#define MKDIR(dir) _mkdir(dir)
+#else
+#include <sys/stat.h>
+#define MKDIR(dir) mkdir(dir, 0755)
+#endif
+  if (MKDIR(dir_name) == 0) {
+    printf("Directory '%s' created.\n", dir_name);
+  } else {
+    perror("mkdir failed");
+  }
+
+  //    // Matteo's wave files
+  if (Params.EnableWaves) {
+    for (i = 0; i < MAX_NBRD; i++) {
+      for (j = 0; j < MAX_NCH+2; j++) {
+	if (j >= MAX_NCH) {
+	  //snprintf(file_name, 50, "waves_FastTrigger_brd%d_gr%d_gr%d.dat", i, 2 * (j % MAX_NCH), 2 * (j % MAX_NCH) + 1);
+	  snprintf(file_name, 50, "%s/waves_frag0_%d_%d.dat", dir_name, i, j);
+	  //printf(file_name);
+	  wave_files[i][j] = fopen(file_name, "wb+");
+	  //fprintf(wave_files[i][j], "Board  %d  FastTrigger gr%d-gr%d", i, 2 * (j % MAX_NCH), 2 * (j % MAX_NCH) + 1);
+	} else {
+	  snprintf(file_name, 50, "%s/waves_frag0_%d_%02d.dat",dir_name, i, j);
+	  wave_files[i][j] = fopen(file_name, "wb+");
+	  //fprintf(wave_files[i][j], "Board  %d  Channel %d", i, j);
+	}
+      }
+    }
+  }
+
+
+  run_number++;
+  lock_run_id = fopen("lockfiles/run_number", "w");
+  if (!lock_run_id) {
+    perror("Failed to open run_number for writing");
+  }
+
+  fprintf(lock_run_id, "%d\n", run_number);
+  fclose(lock_run_id);
+
+
+  /* *************************************************************************************** */
+  /* CHECK CLOCK ALIGNMENT                                                                   */
+  /* *************************************************************************************** */
+  // MOVED TO RunTimeCmd
+
+  /* *************************************************************************************** */
+  /* START RUN                                                                               */
+  /* *************************************************************************************** */
+  /*ret = ForceClockSync(handle[0]);  // Force clock sync in board 0
+    if (ret != 0) printf("Clock not sync\n");
+    ret = ForceClockSync(handle[1]);  // Force clock sync in board 1
+    if (ret != 0) printf("Clock not sync\n");*/
+
+  //ret = StartRun(handle, Params.StartMode, Params.NumBrd);  // Start Run
+  //if (ret != 0) printf("Error starting the acquisition\n");
+  //running = 1;
+  //printf("Run started\n");
+
+  /* *************************************************************************************** */
+  /* READOUT LOOP                                                                            */
+  /* *************************************************************************************** */
+  PrevRateTime = get_time();
+  PrevKbTime = get_time();
+  printf("before while beginning - time: %i\n", PrevKbTime);
+
+  printf("Press [s] to start run, [c] to check clock alignment, [q] to quit, [SPACE] to enter the menu\n\n");
+
+  while (!QuitAcquisition) {
+    //printf("while ciao");
+    CurrentTime = get_time();
+
+    // --------------------------------------------
+    // check for keyboard commands
+    // --------------------------------------------
+    if ((CurrentTime - PrevKbTime) > 200) {
+            
+      int upd =0;// CheckFileUpdate();
+      if (upd) {
+	rdymsg = 1;
+	//printf("upd %i \n", upd);
+	if (running) {
+	  StopRun(handle);
+	  ret = ConfigureDigitizers(handle, BoardInfo, Params);
+	  printf("configure digitizer return code: %i", ret);
+	  ret |= SetSyncMode(handle, Params);
+	  printf("configure digitizer|sync mode return code: %i", ret);
+	  if (ret) {
+	    printf("Errors occurred during digitizer configuration\n");
+	    goto QuitProgram;
+	  }
+	  printf("Boards Configured linea 884 !!\n\n");
+	  StartRun(handle, Params.StartMode);
+	}
+	else {
+	  //printf("else di update");
+
+	  ret = ConfigureDigitizers(handle, BoardInfo, Params);
+	  //printf("morto 897");
+	  ret |= SetSyncMode(handle, Params);
+	  //printf("morto 898");
+	  if (ret) {
+	    printf("Errors occurred during digitizer configuration\n");
+	    goto QuitProgram;
+	  }
+	}
+      }
+
+      if (st_kbhit()) {
+	//printf("survived st_kbhit\n");
+	RunTimeCmd(st_getch());
+	clrscr = 1;
+	rdymsg = 1;
+	if (QuitAcquisition) {
+	  error = 0;
+	  goto QuitProgram;
+	}
+      }
+      PrevKbTime = CurrentTime;
+    }
+
+    if (!running) {
+      if (rdymsg) {
+	printf("Press [s] to start run, [q] to quit, [SPACE] to enter the menu, ciao ciao\n\n");
+	rdymsg = 0;
+      }
+      continue;
+    }
+
+    //printf("before eval trig rate\n");
+    // ----------------------------------------------------------------
+    // Calculate and print throughput and trigger rate (every second)
+    // ----------------------------------------------------------------
+    ElapsedTime = CurrentTime - PrevRateTime;
+    if (ElapsedTime > 10000) {
+      printf("Readout Rate=%.2f MB\n", (float)Nb / ((float)ElapsedTime * 1048.576f));
+      for (i = 0; i < MAX_NBRD; i++) {
+	if (TrgCnt[i] > 0) {
+	  printf("Board %d:\tTrgRate=%.2f KHz. Matching Events=%.2f%%; ",
+		 i, (float)TrgCnt[i] / (float)ElapsedTime, 100 * (float)MatchingEvents / (float)TrgCnt[i]/*, 100*(float)missingEdge[i]/(float)MatchingEvents*/);
+	  if (MatchingEvents > 0)
+	    printf("Missing Edges=%.2f%%\n", 100 * (float)missingEdge[i] / (float)MatchingEvents);
+	  else
+	    printf("No edge found\n");
+	}
+	else {
+	  printf("Board %d:\tNo Data\n", i);
+	}
+	TrgCnt[i] = 0;
+	missingEdge[i] = 0;
+      }
+      printf("DeltaT Edges:    mean=%.4f  sigma=%.4f on %" PRIu64 " data\n", Stats.MeanT / Stats.NsT, sqrt(Stats.SigmaT / Stats.NsT - (Stats.MeanT * Stats.MeanT) / (Stats.NsT * Stats.NsT)), Stats.NsT);
+      printf("DeltaT Channel Time Tag: mean=%.4f  sigma=%.4f on %" PRIu64 " data\n", Stats.MeanTTT / Stats.NsTTT, sqrt(Stats.SigmaTTT / Stats.NsTTT - (Stats.MeanTTT * Stats.MeanTTT) / (Stats.NsTTT * Stats.NsTTT)), Stats.NsTTT);
+      Nb = 0;
+      MatchingEvents = 0;
+
+      PrevRateTime = CurrentTime;
+      printf("\n\n");
+    }
+
+    //printf("before read data\n\n");
+
+    // ----------------------------------------------------------------
+    // Read data
+    // ----------------------------------------------------------------
+    for (i = 0; i < MAX_NBRD; i++) {
+      // printf("still alive line 966, GetNextEvent[i]= %i \n\n",GetNextEvent[i]);
+      if (GetNextEvent[i]) {
+	/* read a new data block from the board if there are no more events to use in the readout buffer */
+	if(EIndx[i] >= NumEvents[i]) {
+	  EIndx[i] = 0;
+	  /* Read a data block from the board */
+	  ret = CAEN_DGTZ_ReadData(handle[i], CAEN_DGTZ_SLAVE_TERMINATED_READOUT_MBLT, buffer[i], &BufferSize[i]);
+	  //printf("return code:%i, EIdx[%i] %i event: %i, buffer size %i \n", ret, i, EIndx[i], NumEvents[i], BufferSize[i]);
+	  Nb += BufferSize[i];
+	  if (BufferSize[i] > 0)
+	    ret = ret;
+	  ret |= CAEN_DGTZ_GetNumEvents(handle[i], buffer[i], BufferSize[i], &NumEvents[i]);
+	  //printf("after CAEN_DGTZ_GetNumEvents - return code:%i, event: %i \n", ret, NumEvents[i]);
+	  if (ret) {
+	    printf("Readout Error\n");
+	    goto QuitProgram;
+	  }
+	}
+	/* Get one event from the readout buffer */
+	if (NumEvents[i]) {
+	  //printf("some event found ...\n");
+	  ret = CAEN_DGTZ_GetEventInfo(handle[i], buffer[i], BufferSize[i], EIndx[i], &EventInfo[i], &EventPtr[i]);
+	  ret = CAEN_DGTZ_DecodeEvent(handle[i], EventPtr[i], (void**)&Event742[i]);
+	  //printf("event decoded, return code: %i\n", ret);
+	  TrgCnt[i]++;
+	  if (ret) {
+	    printf("Event build error\n");
+	    goto QuitProgram;
+	  }
+	  GetNextEvent[i] = 0;
+	}
+      }
+    }
+    if (GetNextEvent[0] || GetNextEvent[1])  // missing data from one or both boards
+      continue;
+    //printf("still alive line 997\n\n");
+
+    // ----------------------------------------------------------------
+    // Analyze data
+    // ----------------------------------------------------------------
+    // calculate extended Trigger Time Tag (take roll over into account)
+    for (i = 0; i < MAX_NBRD; i++) {
+      if (Event742[i]->GrPresent[(Params.RefChannel[i] / 8)]) {
+	Stats.TTT[i] = ((Nroll[i] << 30) + (Event742[i]->DataGroup[(Params.RefChannel[i] / 8)].TriggerTimeTag & 0x3FFFFFFF)) * Tt;
+	if (Stats.TTT[i] < Stats.PrevTTT[i]) {
+	  Nroll[i]++;
+	  Stats.TTT[i] += (1 << 30) * Tt;
+	}
+	Stats.PrevTTT[i] = Stats.TTT[i];
+      }
+      else {
+	EvNoData[i]++;
+      }
+    }
+
+    if (TrgCnt[0] == TrgCnt[1]) delay_mean[TrgCnt[0]%MAX_DELAY_WINDOW] = Stats.TTT[0] / Tt - Stats.TTT[1] / Tt;
+    double delay=0;
+    for(int j=0; j<MAX_DELAY_WINDOW; j++) delay += delay_mean[j] /MAX_DELAY_WINDOW;
+    delay = (int)delay;
+    //printf("current delay: %i", (int)delay);
+
+    Stats.TTT[0] -= delay * Tt;
+
+    // Printf for sync test - DEBUG
+    for (i = 0; i < MAX_NBRD; i++) {
+      fprintf(ofile, "board_%d:  TrgId:%d   TTT:%f   (From EventInfo: board_%d:  evt_%d   TTT:%" PRIu32 ") \n",
+	      i, TrgCnt[i], Stats.TTT[i], EventInfo[i].BoardId, EventInfo[i].EventCounter, EventInfo[i].TriggerTimeTag);
+    }
+    for (i = 1; i < MAX_NBRD; ++i) {
+      fprintf(ofile, "Diff TTT[0] - TTT[%d] = %f\n", i, (Stats.TTT[0] / Tt - Stats.TTT[i] / Tt));
+      fprintf(ofile, "  -   Delay: = %i\n", i, (int)delay);
+      fprintf(ofile, "\n\n");
+    }
+    //fprintf(ofile, "Diff TTT[0] - TTT[1] = %f\n", (TTT[0] / Tt - TTT[1] / Tt));
+    //fprintf(ofile, "\n\n");
+
+    // use only events whose time stamp differ of less than the matching window:
+    // CASE1: board 0 is behind board 1; keep event from 1 and take next event from 0
+
+    if (Stats.TTT[0] < (Stats.TTT[1] - Params.MatchingWindow * Tt)) {
+      EIndx[0]++;
+      GetNextEvent[0] = 1;
+      fprintf(ofile1, "board_0:  TrgId:%d   TTT:%f  \n",
+	      TrgCnt[0], Stats.TTT[0]);
+      continue;
+      // CASE2: board 1 is behind board 0; keep event from 0 and take next event from 1
+    }
+    else if (Stats.TTT[1] < (Stats.TTT[0] - Params.MatchingWindow * Tt)) {
+      EIndx[1]++;
+      GetNextEvent[1] = 1;
+      fprintf(ofile1, "board_1:  TrgId:%d   TTT:%f  \n",
+	      TrgCnt[1], Stats.TTT[1]);
+      continue;
+      // CASE3: trigger time tags match: calculate DeltaT between edges
+    }
+    else {
+      MatchingEvents++;
+      for (i = 0; i < 2; i++) {
+	EIndx[i]++;
+	GetNextEvent[i] = 1;
+	fprintf(ofile1, "Events matched:  DT:%f   \n",
+		(Stats.TTT[1] - Stats.TTT[0]) / Tt);
+	fprintf(ofile1, "\n\n");
+
+
+	/* Correct event of both boards (ApplyCorrection to all the group channels)*/
+	for (int gr = 0; gr < MAX_NGR; ++gr)
+	  ApplyDataCorrection(gr, 7, Params.DRS4Frequency, &(Event742[i]->DataGroup[gr]), &Table[i][gr]);
+	//ApplyDataCorrection((Params.RefChannel[i] / 8), 7, Params.DRS4Frequency, &(Event742[i]->DataGroup[Params.RefChannel[i] / 8]), &Table[i]);
+	//ApplyDataCorrection(&(X742Table[i]), Params.DRS4Frequency, 7, &(Event742[i]->DataGroup[Params.RefChannel[i] / 8]));
+
+	Ns[i] = Event742[i]->DataGroup[Params.RefChannel[i] / 8].ChSize[Params.RefChannel[i] % 8];
+	Wave[i] = Event742[i]->DataGroup[Params.RefChannel[i] / 8].DataChannel[Params.RefChannel[i] % 8];
+	/* calculate threshold crossing time by interpolation */
+	Stats.PulseEdgeTime[i] = interpolate(Wave[i], Ns[i], Params.ChannelThreshold[i], Params.ChannelPulseEdge[i], 0);
+
+	Ns[i] = Event742[i]->DataGroup[Params.RefChannel[i] / 8].ChSize[8];
+	Trigger[i] = Event742[i]->DataGroup[Params.RefChannel[i] / 8].DataChannel[8];
+	/* calculate threshold crossing time by interpolation */
+	Stats.TrEdgeTime[i] = interpolate(Trigger[i], Ns[i], Params.TRThreshold[i], Params.TriggerEdge, 0);
+
+	if ((Stats.PulseEdgeTime[i] < 0) || (Stats.TrEdgeTime[i] < 0)) {
+	  missingEdge[i]++;
+	  Stats.TrEdgeTime[i] = -1.0;
+	}
+	else {
+	  //time between pulse and Tr
+	  Stats.PulseEdgeTime[i] = Stats.TrEdgeTime[i] - Stats.PulseEdgeTime[i];
+	  Stats.TrEdgeTime[i] = 0;
+	}
+
+      }
+
+      // if both edge times have been found, calculate deltaT and update statistics
+      if ((Stats.TrEdgeTime[0] >= 0) && (Stats.TrEdgeTime[1] >= 0)) {
+	int bin;
+	// Calculate Delta T on the time tags
+	Stats.DeltaTTT = Stats.TTT[0] - Stats.TTT[1];
+	Stats.MeanTTT += Stats.DeltaTTT;
+	Stats.SigmaTTT += (Stats.DeltaTTT * Stats.DeltaTTT);
+	Stats.NsTTT++;
+
+	// Calculate Delta T between the edges (Board0-Board1)
+	Stats.DeltaT = (Stats.PulseEdgeTime[0] - Stats.PulseEdgeTime[1]) * Ts;
+	Stats.MeanT += Stats.DeltaT;
+	Stats.SigmaT += (Stats.DeltaT * Stats.DeltaT);
+	Stats.NsT++;
+      }
+
+
+      //Saves data into file
+      if (Params.EnableWaves) {
+	for (i = 0; i < MAX_NBRD; i++) {
+	  for (j = 0; j < MAX_NCH +2; ++j) {
+	    //fprintf(wave_files[i][j], "Event %d\n", event_counter);
+	    if (j >= MAX_NCH) {
+	      Wave_chs[i][j] = Event742[i]->DataGroup[2 * (j % MAX_NCH)].DataChannel[8];
+	      Ch_size = Event742[i]->DataGroup[2 * (j % MAX_NCH)].ChSize[8];
+	    } else {
+	      //printf("Wave_chs[i][j] = %i", Wave_chs[i][j]);
+	      Wave_chs[i][j] = Event742[i]->DataGroup[j / 8].DataChannel[j % 8];
+	      Ch_size = Event742[i]->DataGroup[j / 8].ChSize[j % 8];
+	      //printf("Ch_size %i", Ch_size);
+	    }
+	    if (!Ch_size) continue;
+	    //for (int k = 0; k < Params.RecordLength; ++k) {
+	    //fprintf(wave_files[i][j], "%.2f\n", Wave_chs[i][j][k]);
+	    //}
+	    fwrite(Wave_chs[i][j], sizeof(float), Params.RecordLength, wave_files[i][j]);
+	    num_written_events++;
+	    //fflush(wave_files[i][j]);
+	  }
+	}
+	++event_counter;
+
+      }
+      
+      if(EventInfo[0].EventCounter%100==0){
+	printf("------ Events collected at brd 0 = %d, brd 1 = %d -----\n\n", EventInfo[0].EventCounter, EventInfo[1].EventCounter);
+	if (Params.EnableWaves) {
+	  
+	  int n_fragment = EventInfo[0].EventCounter / 100;
+	  
+	  if (n_fragment){
+	    for (i = 0; i < MAX_NBRD; i++) {
+	      for (j = 0; j < MAX_NCH + 2; j++) {
+		if (wave_files[i][j]){
+		  fseek(wave_files[i][j], 0, SEEK_SET);
+		  fwrite(&num_written_events, sizeof(int), 1, wave_files[i][j]);
+		  fclose(wave_files[i][j]);
+		  num_written_events = 0;
+                }
+              }
+	    }
+	    
+
+	    for (i = 0; i < MAX_NBRD; i++) {
+	      for (j = 0; j < MAX_NCH+2; j++) {
+		if (j >= MAX_NCH) {
+		  //snprintf(file_name, 50, "waves_FastTrigger_brd%d_gr%d_gr%d.dat", i, 2 * (j % MAX_NCH), 2 * (j % MAX_NCH) + 1);
+		  snprintf(file_name, 50, "%s/waves_frag%d_%d_%d.dat", dir_name, n_fragment, i, j);
+		  //printf(file_name);
+		  wave_files[i][j] = fopen(file_name, "wb+");
+		  //fprintf(wave_files[i][j], "Board  %d  FastTrigger gr%d-gr%d", i, 2 * (j % MAX_NCH), 2 * (j % MAX_NCH) + 1);
+		} else {
+		  snprintf(file_name, 50, "%s/waves_frag%d_%d_%02d.dat",dir_name, n_fragment, i, j);
+		  wave_files[i][j] = fopen(file_name, "wb+");
+		  //fprintf(wave_files[i][j], "Board  %d  Channel %d", i, j);
+		}
+	      }
+	    }
+	  }
+	}
+
+      }
+	
+    } /* End of readout loop */
+    error = 0;
+
+  QuitProgram:
+    if (error)
+      st_getch();
+
+
+
+    /* *************************************************************************************** */
+    /* FINAL CLEANUP                                                                           */
+    /* *************************************************************************************** */
+    for (i = 0; i < 2; i++) {
+      /* stop the acquisition */
+      CAEN_DGTZ_SWStopAcquisition(handle[i]);
+      /* close the device and free the buffers */
+      CAEN_DGTZ_FreeEvent(handle[i], (void**)&Event742);
+      CAEN_DGTZ_FreeReadoutBuffer(&buffer[i]);
+      /* close connection to boards */
+      CAEN_DGTZ_CloseDigitizer(handle[i]);
+    }
+    /* close open files */
+    fclose(ofile);
+    fclose(ofile1);
+
+    for (i = 0; i < MAX_NBRD; i++) {
+      for (j = 0; j < MAX_NCH + 2; j++) {
+	if (wave_files[i][j]){
+	  fseek(wave_files[i][j], 0, SEEK_SET);
+	  fwrite(&num_written_events, sizeof(int), 1, wave_files[i][j]);
+	  fclose(wave_files[i][j]);
+	}
+      } 	
+    }
+  }
+  return 0;
+}

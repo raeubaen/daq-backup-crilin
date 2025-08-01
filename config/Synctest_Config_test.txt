@@ -1,0 +1,82 @@
+# ******************************************************************************************************************
+# PARAMS FILE
+# ******************************************************************************************************************
+#
+# ------------------------------------------------------------------------------------------------------------------
+# OPEN
+# ------------------------------------------------------------------------------------------------------------------
+# Open[b]			ConnectionType:    
+# Options:
+#	- USB 0 0                  Desktop/NIM digitizer through USB (direct to USB)
+#	- USB 0 BA                 VME digitizer through USB-V1718/V3718 (BA = BaseAddress of the VME board, 32 bit hex)
+#	- PCI 0 0 0                Desktop/NIM/VME through CONET (optical link) 
+#	- PCI 0 0 BA               VME digitizer through V2718/V3718 (BA = BaseAddress of the VME board, 32 bit hex) 
+#	- USB_A4818 X 0 0          Desktop/NIM digitizer through USB->A4818->CONET (X is the PID (product id) of A4818)
+#	- USB_A4818_V2718 X 0 BA   VME digitizer through USB-A4818-V2718 (BA = BaseAddress of the VME board, 32 bit hex) (X is the PID (product id) of A4818)
+#	- USB_A4818_V3718 X 0 BA   VME digitizer through USB-A4818-V3718 (BA = BaseAddress of the VME board, 32 bit hex) (X is the PID (product id) of A4818)
+#	- USB_A4818_V4718 X 0 BA   VME digitizer through USB-A4818-V4718 (BA = BaseAddress of the VME board, 32 bit hex) (X is the PID (product id) of A4818)
+#	- ETH_V4718 IP 0 BA        VME digitizer through ETH-V4718 (BA = BaseAddress of the VME board, 32 bit hex) (IP is the IP Address of the V4718)
+#	- USB_V4718 X 0 BA         VME digitizer through USB-V4718 (BA = BaseAddress of the VME board, 32 bit hex) (X is the PID (product id) of V4718)
+# for multiple boards, Open[0] indicates the master board
+
+# example for using two VME digitizer through USB-V1718 (uncomment the two lines below)
+#Open[0]			USB 0 32110000
+#Open[1]			USB 0 32100000
+
+# example for using two VME digitizer through ETH-V4718 (uncomment the two lines below)
+#Open[0]			USB_A4818 49826 0 0
+#Open[1]			USB_A4818 49826	0 1
+
+Open[0]				USB_A4818 49826  0 0		# MASTER
+Open[1]				USB_A4818 49826  1 0		# SLAVE
+	
+# ------------------------------------------------------------------------------------------------------------------
+# THRESHOLD AND CHANNEL SETTINGS
+# ------------------------------------------------------------------------------------------------------------------
+# NIM signal on TR:	DC_OFFSET 32768 	TRIGGER_THRESHOLD 20934 
+# NIM/2 signal on TR:	DC_OFFSET 32768 	TRIGGER_THRESHOLD 23574 
+# AC signal on TR:		DC_OFFSET 32768		TRIGGER_THRESHOLD 26214 
+# +2V signal on TR: 	DC_OFFSET 43520		TRIGGER_THRESHOLD 26214
+
+RefChannel[0]				11				# Channel used as a reference for the synchronization check
+FastTriggerThreshold[0]		20934			# Fast Trigger channel Threshold (for fast triggering)
+FastTriggerOffset[0]		32768			# Fast Trigger channel Offset adjust (DAC value)
+DCoffset[0]					0x7FFF			# input channel offset adjustment (DAC value)
+PostTrigger[0]				30				# Post trigger in percent of the acquisition window
+# Edge Setting
+ChannelThreshold[0]			2600			# Channel Threshold for Time Pulse Calculation
+ChannelPulseEdge[0]			RISINGEDGE		# Channel Pulse Edge. Options: FALLINGEDGE, RISINGEDGE
+TRThreshold[0]				2000			# TRn Threshold for Time Trigger Calculation
+
+RefChannel[1]				1				# Channel used as a reference for the synchronization check
+FastTriggerThreshold[1]		20934			# Fast Trigger channel Threshold (for fast triggering)
+FastTriggerOffset[1]		32768			# Fast Trigger channel Offset adjust (DAC value)
+DCoffset[1]					0x7FFF			# input channel offset adjustment (DAC value)
+PostTrigger[1]				30				# Post trigger in percent of the acquisition window
+# Edge Setting
+ChannelThreshold[1]			2600			# Channel Threshold for Time Pulse Calculation
+ChannelPulseEdge[1]			RISINGEDGE		# Channel Pulse Edge. Options: FALLINGEDGE, RISINGEDGE
+TRThreshold[1]				1960			# TRn Threshold for Time Trigger Calculation
+
+# GENERAL SETTINGS
+TriggerEdge					RISINGEDGE		# Trigger edge. Options: FALLINGEDGE, RISINGEDGE
+RecordLength				1024			# Number of samples in the acquisition windows (Valid Options: 1024, 520, 256 and 136)
+MatchingWindow				8				# Max. distance between the trigger time tags in order to consider a valid coincidence
+
+IOlevel						NIM				# Front Panel LEMO I/O level (NIM or TTL). Options: NIM, TTL
+TestPattern					0				# Internal Test Pattern (triangular wave replacing ADC data): 0=disabled, 1=enabled
+DRS4Frequency				DRS4_1GHz		# DRS4 Sampling Frequency. Options: DRS4_5GHz, DRS4_2_5GHz, DRS4_1GHz
+
+SyncMode					TRGEXT		    # Syncronization Mode. Options: TRGEXT -> Trigger source vetoed externally, BUSYDCHAIN -> Busy propagated in Daisy-Chain
+
+# ------------------------------------------------------------------------------------------------------------------
+# OTHER OPTIONS 
+# ------------------------------------------------------------------------------------------------------------------
+EnableLog					1				# LOG ENABLING. OPTIONS: 0, 1
+
+HistoNbins					100				# Number of bins of the histogram
+HistoBinSize				0.2				# Bin size in ns
+HistoOffset				   -6.0				# Lower value of the histogram in ns
+
+
+# ******************************************************************************************************************

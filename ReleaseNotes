@@ -1,0 +1,35 @@
+
+  -----------------------------------------------------------------------------
+
+                   --- CAEN SpA - Computing Division ---
+
+  -----------------------------------------------------------------------------
+
+  synctest X742 Release Notes
+
+  -----------------------------------------------------------------------------
+  Rel. 3.0.0  13/04/2023
+			 - First official Release
+			  
+  -----------------------------------------------------------------------------
+
+
+  Description
+  -----------
+
+  This file describes the revision history of synctest-X742, a sample program for
+  test the syncronization of the CAEN X742 boards.
+  See the file README.am for more informations.
+
+  System Requirements
+  -------------------
+  - CAENDigitizer library >= 2.17.3
+  - CAENComm library >= 1.6.0
+  - CAENVMELib library >= 3.3.7
+  - GNUplot >= 4.2 (www.gnuplot.org)
+
+
+  How to get support
+  ------------------
+  
+  For technical support, go to https://www.caen.it/mycaen/support/ (login and MyCAEN+ account required)
