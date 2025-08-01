@@ -506,6 +506,7 @@ int StartRun(int handle[MAX_NBRD], int StartMode)
     printf("Run not started\n");
     return re;
   }
+  //printf("Press 't' to activate triggers\n\n");
   return 0;
 }
 
@@ -603,6 +604,7 @@ int RunTimeCmd(int c) {
     PlotType = (PlotType == PLOT_HISTOGRAM ? PLOT_WAVEFORM : PLOT_HISTOGRAM);
   if (c == 't'){
     if(running){
+      printf("Triggers are now on\n\n"); 
       uint32_t rdata;
       CAEN_DGTZ_ReadRegister(handle[1], ADDR_FRONT_PANEL_IO_SET, &rdata); //edm
       rdata &= ~((1 << 1) | (1 << 16) | (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20));
@@ -633,7 +635,9 @@ int RunTimeCmd(int c) {
 	return -1;
       }
       running = 1;
-      printf("Acquisition started\n\n");
+      printf("Acquisition started, wait 5 sec to activate triggers\n\n");
+      sleep(5);
+      printf("Press [t] to activate triggers\n\n");
 
       //uint32_t rdata;
     }
@@ -647,7 +651,7 @@ int RunTimeCmd(int c) {
 
       StopRun(handle);
 
-      printf("Acquisition stopped. Press s to restart, q to quit\n\n");
+      printf("Acquisition and triggers stopped. Press s to restart, q to quit\n\n");
     }
   }
   if (c == 'r') {
@@ -980,7 +984,7 @@ int main(int argc, char* argv[])
 
     if (!running) {
       if (rdymsg) {
-	printf("Press [s] to start run, [q] to quit, [SPACE] to enter the menu, ciao ciao\n\n");
+	printf("Press [s] to start run, [q] to quit, [SPACE] to enter the menu\n\n");
 	rdymsg = 0;
       }
       continue;
